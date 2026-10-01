@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Flow Image Downloader</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <h1>Flow Image Downloader</h1>
+
+    <div id="msg" class="msg hidden"></div>
+
+    <section class="form">
+      <label for="folder">Folder name <span class="req">*</span></label>
+      <input id="folder" type="text" placeholder="e.g. My Flow project" autocomplete="off" />
+      <div class="hint">Saved to Downloads/<span id="folderPreview">…</span>/</div>
+
+      <label for="start">Start number <span class="opt">(optional)</span></label>
+      <input id="start" type="number" min="1" step="1" placeholder="Leave empty to use the name's number" />
+      <div class="hint" id="startHint">Example: start 400 → name 1 = 400, name 2 = 401.</div>
+    </section>
+
+    <section class="row">
+      <button id="scanBtn" class="primary">Scan</button>
+      <button id="stopScanBtn" class="hidden">Stop scan</button>
+      <span id="scanStatus" class="status"></span>
+    </section>
+
+    <section id="summary" class="hidden">
+      <h2>Scan summary</h2>
+      <div class="stats">
+        <div><b id="sTotal">0</b><span>images found</span></div>
+        <div><b id="sLow">–</b><span>lowest number</span></div>
+        <div><b id="sHigh">–</b><span>highest number</span></div>
+        <div><b id="sFiles">0</b><span>files to download</span></div>
+        <div><b id="sMissing">0</b><span>missing numbers</span></div>
+        <div><b id="sRename">0</b><span>need renaming</span></div>
+      </div>
+      <div id="sNotes" class="notes"></div>
+
+      <h3>Numbers</h3>
+      <div id="numList" class="chips"></div>
+
+      <div id="dupBlock" class="hidden">
+        <h3>Duplicates (all versions are downloaded)</h3>
+        <ul id="dupList" class="list"></ul>
+      </div>
+
+      <div id="renameBlock" class="hidden">
+        <h3>Needs renaming in Flow (not downloaded)</h3>
+        <ul id="renameList" class="list"></ul>
+      </div>
+    </section>
+
+    <section class="row">
+      <button id="downloadBtn" class="primary" disabled>Download all</button>
+      <button id="stopBtn" class="danger hidden">Stop</button>
+    </section>
+
+    <section id="progress" class="hidden">
+      <div class="bar"><div id="barFill"></div></div>
+      <div id="counter" class="status">0 / 0</div>
+    </section>
+
+    <section id="report" class="hidden">
+      <h2>Report</h2>
+      <div class="stats three">
+        <div class="good"><b id="rOk">0</b><span>downloaded</span></div>
+        <div><b id="rSkipped">0</b><span>skipped</span></div>
+        <div class="bad"><b id="rFailed">0</b><span>failed</span></div>
+      </div>
+      <div id="rNotes" class="notes"></div>
+      <ul id="failedList" class="list"></ul>
+      <button id="retryBtn" class="hidden">Retry failed</button>
+    </section>
+
+    <footer>
+      <button id="debugBtn" class="link">Copy page info (for fixing selectors)</button>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
