@@ -144,12 +144,13 @@ function revokeBlobUrl(url) {
 
 /* ------------------------------ fetching ------------------------------ */
 
-async function getBytes(url, tabId) {
+// `via` picks which script in the tab answers ('numberer' = hand-numbering panel).
+async function getBytes(url, tabId, via) {
   const errors = [];
   // 1) Inside the page: works for blob:, data: and the page's own URLs.
   if (tabId != null) {
     try {
-      const r = await chrome.tabs.sendMessage(tabId, { type: 'fetchImage', url });
+      const r = await chrome.tabs.sendMessage(tabId, { type: 'fetchImage', url, via });
       if (r && r.ok) return r;
       errors.push(r ? r.error : 'no answer from the page (was it reloaded?)');
     } catch (e) {
@@ -171,8 +172,8 @@ async function getBytes(url, tabId) {
 
 /* ---------------------------- one download ---------------------------- */
 
-async function downloadOne(file, folder, tabId) {
-  const data = await getBytes(file.url, tabId);
+async function downloadOne(file, folder, tabId, via) {
+  const data = await getBytes(file.url, tabId, via);
   if (!data.ok) return { ok: false, error: data.error };
 
   const ext = sniffExt(data.base64);
@@ -206,7 +207,7 @@ async function downloadOne(file, folder, tabId) {
     const got = saved.split('/').pop() || 'unknown';
     return { ok: false, error: `Chrome saved it as "${got}" instead of "${file.filename}.${ext}" (another extension may be renaming downloads) - file deleted` };
   }
-  return { ok: true, saved: `${file.filename}.${ext}` };
+  return { ok: true, id, saved: `${file.filename}.${ext}` };
 }
 
 /* -------------------------------- job --------------------------------- */
@@ -346,6 +347,38 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         runJob(files);
         sendResponse({ ok: true });
       });
+      return true;
+
+    // One image from the hand-numbering panel (drag/drop or click mode).
+    case 'saveImage': {
+      const tabId = sender.tab ? sender.tab.id : null;
+      const files = [{ filename: msg.filename, url: msg.url }];
+      const problem = validateJob(msg.folder, files);
+      if (problem) {
+        sendResponse({ ok: false, error: problem });
+        return;
+      }
+      (async () => {
+        let r = await downloadOne(files[0], msg.folder, tabId, 'numberer').catch((e) => ({ ok: false, error: errText(e) }));
+        // Full-size URL failed: try the URL shown on the page, and say so.
+        if (!r.ok && msg.fallbackUrl && msg.fallbackUrl !== msg.url) {
+          const r2 = await downloadOne({ filename: msg.filename, url: msg.fallbackUrl }, msg.folder, tabId, 'numberer').catch((e) => ({ ok: false, error: errText(e) }));
+          r = r2.ok ? { ...r2, usedFallback: true, fullResError: r.error } : { ok: false, error: `${r.error}; display-size URL: ${r2.error}` };
+        }
+        sendResponse(r);
+      })();
+      return true;
+    }
+
+    // "Undo last" in the hand-numbering panel: delete the file it saved.
+    case 'removeDownload':
+      (async () => {
+        try {
+          await chrome.downloads.removeFile(msg.id);
+        } catch {}
+        await chrome.downloads.erase({ id: msg.id }).catch(() => {});
+        sendResponse({ ok: true });
+      })();
       return true;
 
     case 'stopDownload':

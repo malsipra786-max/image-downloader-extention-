@@ -411,6 +411,17 @@ async function onRetry() {
   if (!r || !r.ok) showMsg('error', (r && r.error) || 'Could not retry.');
 }
 
+// Opens the hand-numbering panel on the page and closes the popup.
+async function onHand() {
+  if (tabId == null) return;
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['numberer.js'] });
+    window.close();
+  } catch {
+    showMsg('error', "Chrome doesn't let extensions use this page. Open your Flow project and try again.");
+  }
+}
+
 async function onPageInfo() {
   const r = connected ? await tabSend({ type: 'pageInfo', minSize: readMinSize() }) : null;
   if (!r) {
@@ -464,6 +475,7 @@ async function init() {
   $('stopBtn').addEventListener('click', () => send({ type: 'stopDownload' }));
   $('retryBtn').addEventListener('click', onRetry);
   $('infoBtn').addEventListener('click', onPageInfo);
+  $('handBtn').addEventListener('click', onHand);
   $('start').addEventListener('input', renderSummary);
   $('minSize').addEventListener('input', renderSummary);
   $('mode').addEventListener('change', () => {

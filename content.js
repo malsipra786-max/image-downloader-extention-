@@ -766,6 +766,7 @@
         sendResponse({ ok: true });
         return;
       case 'fetchImage':
+        if (msg.via === 'numberer') return; // answered by the hand-numbering panel
         fetchImage(msg.url).then(sendResponse);
         return true;
       case 'pageInfo':

@@ -116,3 +116,9 @@ footer { margin-top: 16px; padding-top: 8px; border-top: 1px solid #eee; text-al
 #debugTable td:first-child { color: #555; width: 42%; }
 #debugTable tr.bad td { color: #a50e0e; font-weight: 600; }
 #preview { max-height: none; }
+
+.hand { margin-bottom: 4px; }
+.hand button { width: 100%; background: #e8f0fe; border-color: #8ab4f8; color: #174ea6; }
+.hand button:hover:not(:disabled) { background: #d2e3fc; }
+.divider { display: flex; align-items: center; gap: 8px; margin: 12px 0 2px; color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid #e0e0e0; }

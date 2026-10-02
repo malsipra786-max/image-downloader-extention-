@@ -33,7 +33,46 @@ reload the Flow tab.
 
 ---
 
-## 2. How to use it
+## 2. Number by hand (drag or click) — easiest
+
+No scan and no selectors: you pick the images one at a time.
+
+1. Open your Flow project and click the extension icon.
+2. Click **✋ Number by hand (drag or click)…**. A panel opens on the page. Drag it by its
+   blue title bar to move it out of the way. It stays open while you work (`–` folds it,
+   `×` closes it).
+3. Type a **Folder name** and a **Start number** (default 1). The big number shows the
+   **next** number that will be used.
+4. Save images, one at a time:
+   - **Drag** an image onto the drop box, **or**
+   - turn on **Click mode** and simply **click** an image.
+   Each image is saved right away as `Downloads/<folder>/001.png`, `002.png`, … and the
+   counter goes up by one.
+5. The image flashes **green** when it is saved, **red** if it failed. The panel shows a list:
+   `001 ✓ 002 ✓ 003 ✓`. Click a red number to retry it.
+6. **Undo last** deletes the last saved file and moves the counter back, so you can redo it.
+   **Reset list** clears the list (files are kept) and sets the counter to the start number.
+
+Good to know:
+
+- Flow's images have `draggable="false"`, so dragging usually doesn't work there. The panel
+  checks this when it opens and **turns on Click mode by itself**; the grey line in the
+  panel says which method is active. In Click mode, clicking an image saves it instead of
+  opening it. The small buttons on a card (heart, ⋮) still work. Press **Esc** (or untick the
+  box) to turn Click mode off and use Flow normally.
+- If you number the **same image twice** (same `data-media-id`), it is still saved, but the
+  panel warns you and marks it `=001`.
+- **Full resolution** (on by default): Flow image addresses end with a size like `=s1600-rw`;
+  this is replaced with `=s0` to get the original. If that fails, the size shown on the page
+  is saved instead and marked `(small)`. Untick it to always save what is shown.
+- The counter, list and folder are remembered, also after reloading the page.
+- The settings for this mode are in `HAND_CONFIG` at the top of `numberer.js`
+  (`img.image`, `data-media-id`). Never use attributes like `_ngcontent-ng-c2213854978`:
+  Angular changes them every time Google updates Flow.
+
+---
+
+## 3. Scan the whole page
 
 1. Open your project in Google Flow and click **Images** in the left sidebar.
 2. Click the extension icon.
@@ -65,19 +104,19 @@ min image size, scan again.
 
 ---
 
-## 3. Messages
+## 4. Messages
 
 | Message | What to do |
 |---|---|
 | *Run Scan first.* | Download only works after a successful scan. |
-| *No images found* | Wait for the page to load and scan again. If it still fails, see section 4. |
+| *No images found* | Wait for the page to load and scan again. If it still fails, see section 5, or use "Number by hand" (section 2). |
 | *Open the Images view first* | Click **Images** in Flow's sidebar, or click **Force scan anyway**. |
 | *No site profile for this address* | Only information: generic detection is used. |
 | *Chrome doesn't let extensions read this page* | Chrome blocks extensions on `chrome://` pages and the Web Store. |
 
 ---
 
-## 4. Fixing detection with the debug panel
+## 5. Fixing detection with the debug panel
 
 After every scan, open **Debug panel** in the popup:
 
@@ -133,7 +172,8 @@ After editing, reload the extension at `chrome://extensions` and reload the page
 | File | Job |
 |---|---|
 | `manifest.json` | extension settings (Manifest V3) |
-| `content.js` | runs in the page: `CONFIG`, finds images and labels, scrolls |
+| `content.js` | runs in the page for Scan: `CONFIG`, finds images and labels, scrolls |
+| `numberer.js` | the "Number by hand" panel (drag / click), `HAND_CONFIG` |
 | `background.js` | downloads in small batches, checks every saved file name |
 | `offscreen.html` / `offscreen.js` | turns image bytes into files Chrome can save |
 | `popup.html` / `popup.css` / `popup.js` | the window you click on |
