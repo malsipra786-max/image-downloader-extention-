@@ -59,6 +59,7 @@
     fullRes: true,
     pos: null,
     history: [],             // { n, filename, mediaId, url, displayUrl, status, saved, id, error, dupOf, usedFallback }
+    log: [],                 // debug log blocks (newest last)
   };
 
   /* ------------------------------ helpers ------------------------------- */
@@ -135,6 +136,7 @@
     } catch {}
     // Anything still "saving" from last time is unknown now.
     for (const h of state.history) if (h.status === 'pending') h.status = 'failed';
+    if (!Array.isArray(state.log)) state.log = [];
   }
 
   function save() {
@@ -231,7 +233,10 @@
       r = { ok: false, error: alive() ? String(e && e.message ? e.message : e) : 'The extension was reloaded - reload this page.' };
     }
     r = r || { ok: false, error: 'no answer from the extension' };
-    entry.status = r.ok ? 'ok' : 'failed';
+    addLog(entry, r);
+    // mismatch = the file WAS saved, but Chrome used another name (file kept).
+    entry.status = r.ok ? 'ok' : r.mismatch ? 'mismatch' : 'failed';
+    entry.savedAs = r.savedAs || null;
     entry.saved = r.saved || null;
     entry.id = r.id;
     entry.error = r.ok ? null : r.error;
@@ -245,10 +250,32 @@
       if (entry.dupOf) msg += ` (same image as ${entry.dupOf})`;
       if (r.usedFallback) msg += ' - full size failed, saved the size shown on the page';
       setStatus(entry.dupOf || r.usedFallback ? 'warn' : 'ok', msg);
+    } else if (r.mismatch) {
+      flash(img, 'warn', `${entry.filename} ⚠ ${r.savedAs}`);
+      setStatus('warn', `${entry.filename}: Chrome saved it as "${r.savedAs}" (file kept). See the debug log below. Click the number to try again.`);
+      $('.dbg').open = true;
     } else {
       flash(img, 'fail', `${entry.filename} ✗`);
-      setStatus('error', `${entry.filename} failed: ${r.error}. Click the red number to retry.`);
+      setStatus('error', `${entry.filename} failed: ${r.error}. Click the red number to retry. Details in the debug log.`);
     }
+  }
+
+  // One block per save: what was tried, the exact filename passed to
+  // chrome.downloads.download, what Chrome proposed, and what it saved.
+  function addLog(entry, r) {
+    const t = new Date().toLocaleTimeString();
+    const result = r.ok ? `OK: saved ${r.saved}` : r.mismatch ? `NAME MISMATCH: saved as ${r.savedAs}` : `FAILED: ${r.error}`;
+    const lines = [`[${t}] ${entry.filename}${entry.dupOf ? ` (same image as ${entry.dupOf})` : ''}`, ...(r.log || []).map((l) => `  ${l}`), `  => ${result}`];
+    state.log.push(lines.join('\n'));
+    if (state.log.length > 40) state.log.splice(0, state.log.length - 40);
+    renderLog();
+  }
+
+  function renderLog() {
+    if (!root) return;
+    const pre = $('.log');
+    pre.textContent = state.log.length ? state.log.join('\n\n') : 'Nothing logged yet.';
+    pre.scrollTop = pre.scrollHeight;
   }
 
   async function undoLast() {
@@ -260,7 +287,7 @@
     }
     state.history.pop();
     state.next = last.n;
-    if (last.status === 'ok' && last.id != null) {
+    if ((last.status === 'ok' || last.status === 'mismatch') && last.id != null) {
       await chrome.runtime.sendMessage({ type: 'removeDownload', id: last.id }).catch(() => {});
       setStatus('info', `Undid ${last.filename} (file deleted). Next number is ${pad(state.next)}.`);
     } else {
@@ -450,6 +477,15 @@
     .chip.pending { background: #e8f0fe; color: #174ea6; }
     .chip.failed { background: #fce8e6; color: #a50e0e; cursor: pointer; font-weight: 700; }
     .chip.dup { outline: 1px solid #f9ab00; }
+    .chip.mismatch { background: #fef7e0; color: #7a4f01; cursor: pointer; font-weight: 700; }
+    .flash.warn { border: 4px solid #f9ab00; background: rgba(249,171,0,.25); }
+    .flash.warn span { background: #b06000; }
+    .dbg { margin-top: 8px; font-size: 12px; }
+    .dbg summary { cursor: pointer; font-weight: 600; color: #5f6368; }
+    .log {
+      margin: 6px 0; padding: 6px; max-height: 180px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+      font: 10.5px/1.4 ui-monospace, Menlo, Consolas, monospace; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 6px;
+    }
     .buttons { display: flex; gap: 6px; }
     .buttons button {
       flex: 1; padding: 6px 8px; border: 1px solid #c4c7c5; border-radius: 16px; background: #fff;
@@ -490,6 +526,10 @@
         <div class="status info">Saved to Downloads/&lt;folder&gt;/ as 001, 002, …</div>
         <div class="list"></div>
         <div class="buttons"><button class="undo">Undo last</button><button class="reset">Reset list</button></div>
+        <details class="dbg"><summary>Debug log (exact file names sent to Chrome)</summary>
+          <pre class="log"></pre>
+          <div class="buttons"><button class="copyLog">Copy log</button><button class="clearLog">Clear log</button></div>
+        </details>
       </div>
     </div>`;
 
@@ -517,11 +557,11 @@
     list.textContent = '';
     for (const h of state.history.slice(-200)) {
       const chip = document.createElement('span');
-      const mark = h.status === 'ok' ? '✓' : h.status === 'pending' ? '…' : '✗';
+      const mark = h.status === 'ok' ? '✓' : h.status === 'pending' ? '…' : h.status === 'mismatch' ? `⚠ ${h.savedAs || ''}` : '✗';
       chip.className = `chip ${h.status}${h.dupOf ? ' dup' : ''}`;
       chip.textContent = `${h.filename} ${mark}${h.dupOf ? ` =${h.dupOf}` : ''}${h.usedFallback ? ' (small)' : ''}`;
-      chip.title = h.status === 'failed' ? `${h.error || 'failed'} - click to retry` : h.saved || h.url;
-      if (h.status === 'failed') chip.addEventListener('click', () => retry(h));
+      chip.title = h.status === 'failed' || h.status === 'mismatch' ? `${h.error || 'failed'} - click to try again` : h.saved || h.url;
+      if (h.status === 'failed' || h.status === 'mismatch') chip.addEventListener('click', () => retry(h));
       list.appendChild(chip);
     }
     list.scrollTop = list.scrollHeight;
@@ -637,6 +677,19 @@
       render();
       save();
     });
+    $('.copyLog').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(state.log.join('\n\n'));
+        setStatus('info', 'Debug log copied.');
+      } catch {
+        setStatus('error', 'Could not copy - select the log text and copy it by hand.');
+      }
+    });
+    $('.clearLog').addEventListener('click', () => {
+      state.log = [];
+      renderLog();
+      save();
+    });
     $('.min').addEventListener('click', () => panel.classList.toggle('min'));
     $('.close').addEventListener('click', close);
 
@@ -653,6 +706,7 @@
     zone.addEventListener('dragleave', () => zone.classList.remove('over'));
     zone.addEventListener('drop', onDrop);
 
+    renderLog();
     attachListeners();
     state.clickModeTouched = false; // re-detect each time the panel opens
     applyDetection(false);

@@ -1,11 +1,15 @@
 // Image Number Downloader - background service worker.
 // Runs the download job so it keeps going when the popup is closed.
 //
-// SAFETY: every file is saved under a name WE choose (001.png, 023-2.jpg, ...).
-// The image is fetched first, its type is read from its bytes, and it is saved
-// from a blob: URL with an explicit file name. After saving, the real file name
-// is checked; if Chrome saved it under any other name, the file is deleted and
-// counted as failed. The site's own file names are never used.
+// FILE NAMES: every file is saved under a name WE choose (001.png, 023-2.jpg, ...).
+// The image is fetched first, its type is read from its bytes (or Content-Type),
+// and it is saved from a blob: URL. The name is set twice:
+//   1) the `filename` option of chrome.downloads.download, and
+//   2) chrome.downloads.onDeterminingFilename + suggest(), which is the step
+//      where Chrome really decides the name (without it, Chrome can fall back
+//      to "<uuid>.jfif" for blob: URLs).
+// Afterwards the saved name is checked. A wrong name is REPORTED, and the file
+// is kept. Every step is logged and sent back to the caller.
 
 const BATCH_SIZE = 3;              // files downloaded at the same time
 const BATCH_DELAY_MS = 500;        // pause between batches so Chrome doesn't skip files
@@ -20,7 +24,26 @@ const errText = (e) => (e && e.message ? e.message : String(e));
 
 /* ------------------------------ helpers ------------------------------- */
 
-const EXT_MIME = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', avif: 'image/avif' };
+const EXT_MIME = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', avif: 'image/avif', bmp: 'image/bmp' };
+
+// Content-Type -> file extension. JPEG has several names (Windows calls it
+// ".jfif"); all of them are saved as .jpg.
+const MIME_EXT = {
+  'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/pjpeg': 'jpg', 'image/jfif': 'jpg', 'image/pjp': 'jpg',
+  'image/png': 'png', 'image/apng': 'png', 'image/webp': 'webp', 'image/gif': 'gif',
+  'image/avif': 'avif', 'image/bmp': 'bmp', 'image/x-ms-bmp': 'bmp',
+};
+
+// The file extension: from the file's first bytes, else from the Content-Type.
+function pickExt(base64, mime) {
+  const sniffed = sniffExt(base64);
+  if (sniffed) return { ext: sniffed, how: 'from the file bytes' };
+  const m = (mime || '').split(';')[0].trim().toLowerCase();
+  if (MIME_EXT[m]) return { ext: MIME_EXT[m], how: `from Content-Type ${m}` };
+  const sub = /^image\/([a-z0-9]+)/.exec(m);
+  if (sub) return { ext: sub[1], how: `from Content-Type ${m}` };
+  return null;
+}
 
 // The real image type, read from the file's first bytes.
 function sniffExt(base64) {
@@ -36,6 +59,7 @@ function sniffExt(base64) {
   if (b.slice(0, 4) === 'RIFF' && b.slice(8, 12) === 'WEBP') return 'webp';
   if (b.slice(0, 4) === 'GIF8') return 'gif';
   if (b.slice(4, 12) === 'ftypavif' || b.slice(4, 12) === 'ftypavis') return 'avif';
+  if (b.slice(0, 2) === 'BM') return 'bmp';
   return null;
 }
 
@@ -65,6 +89,20 @@ function validateJob(folder, files) {
 }
 
 /* --------------------------- chrome.downloads -------------------------- */
+
+// Our downloads in progress: blob URL -> { wanted, log, id, suggested }.
+const pendingNames = new Map();
+
+// Forces the exact file name. Chrome calls this for every download right when
+// it picks the name; suggest() overrides whatever Chrome came up with.
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  let p = pendingNames.get(item.url) || pendingNames.get(item.finalUrl);
+  if (!p) for (const x of pendingNames.values()) if (x.id === item.id) p = x;
+  if (!p) return; // not ours: Chrome keeps its normal name
+  p.suggested = true;
+  p.log.push(`onDeterminingFilename: Chrome proposed "${item.filename}" (mime "${item.mime || '?'}") -> suggest("${p.wanted}")`);
+  suggest({ filename: p.wanted, conflictAction: 'overwrite' });
+});
 
 function waitForDownload(id) {
   return new Promise((resolve) => {
@@ -151,7 +189,7 @@ async function getBytes(url, tabId, via) {
   if (tabId != null) {
     try {
       const r = await chrome.tabs.sendMessage(tabId, { type: 'fetchImage', url, via });
-      if (r && r.ok) return r;
+      if (r && r.ok) return { ...r, source: 'the page' };
       errors.push(r ? r.error : 'no answer from the page (was it reloaded?)');
     } catch (e) {
       errors.push(`page: ${errText(e)}`);
@@ -162,7 +200,7 @@ async function getBytes(url, tabId, via) {
     try {
       const res = await fetch(url, { credentials: 'include' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return { ok: true, base64: toBase64(await res.arrayBuffer()), mime: res.headers.get('content-type') || '' };
+      return { ok: true, base64: toBase64(await res.arrayBuffer()), mime: res.headers.get('content-type') || '', source: 'the extension' };
     } catch (e) {
       errors.push(`extension: ${errText(e)}`);
     }
@@ -173,41 +211,61 @@ async function getBytes(url, tabId, via) {
 /* ---------------------------- one download ---------------------------- */
 
 async function downloadOne(file, folder, tabId, via) {
+  const log = [];
+  const fail = (error, extra) => ({ ok: false, error, log, ...extra });
+  log.push(`image URL: ${file.url.slice(0, 160)}`);
+
   const data = await getBytes(file.url, tabId, via);
-  if (!data.ok) return { ok: false, error: data.error };
+  if (!data.ok) return fail(data.error);
+  const kind = pickExt(data.base64, data.mime);
+  log.push(`fetched ${Math.round((data.base64.length * 3) / 4)} bytes via ${data.source}, Content-Type "${data.mime || 'none'}"` +
+    (kind ? `, type ${kind.ext} (${kind.how})` : ''));
+  if (!kind) return fail(`not an image (Content-Type "${data.mime || 'unknown'}")`);
 
-  const ext = sniffExt(data.base64);
-  if (!ext) return { ok: false, error: `not a PNG/JPG/WEBP/GIF/AVIF image (${data.mime || 'unknown type'})` };
-
-  const wanted = `${folder}/${file.filename}.${ext}`;
+  const wanted = `${folder}/${file.filename}.${kind.ext}`;
   let blobUrl;
   try {
-    blobUrl = await makeBlobUrl(data.base64, EXT_MIME[ext]);
+    blobUrl = await makeBlobUrl(data.base64, EXT_MIME[kind.ext] || (data.mime || '').split(';')[0] || 'application/octet-stream');
   } catch (e) {
-    return { ok: false, error: errText(e) };
+    return fail(errText(e));
   }
 
+  // Registered BEFORE the download starts: onDeterminingFilename can fire
+  // before chrome.downloads.download() returns the id.
+  const pending = { wanted, log, id: null, suggested: false };
+  pendingNames.set(blobUrl, pending);
   let id;
   try {
+    log.push(`chrome.downloads.download({ url: "${blobUrl}", filename: "${wanted}", saveAs: false, conflictAction: "overwrite" })`);
     id = await chrome.downloads.download({ url: blobUrl, filename: wanted, saveAs: false, conflictAction: 'overwrite' });
+    pending.id = id;
+    log.push(`-> download id ${id}`);
   } catch (e) {
+    pendingNames.delete(blobUrl);
     revokeBlobUrl(blobUrl);
-    return { ok: false, error: errText(e) };
+    log.push(`-> error: ${errText(e)}`);
+    return fail(errText(e));
   }
   const r = await waitForDownload(id);
+  pendingNames.delete(blobUrl);
   revokeBlobUrl(blobUrl);
-  if (!r.ok) return { ok: false, error: r.error };
-
-  // Check the name Chrome actually used. Wrong name -> delete the file.
-  const [item] = await chrome.downloads.search({ id });
-  const saved = ((item && item.filename) || '').replace(/\\/g, '/');
-  if (!saved.endsWith(`/${wanted}`)) {
-    await chrome.downloads.removeFile(id).catch(() => {});
-    chrome.downloads.erase({ id }).catch(() => {});
-    const got = saved.split('/').pop() || 'unknown';
-    return { ok: false, error: `Chrome saved it as "${got}" instead of "${file.filename}.${ext}" (another extension may be renaming downloads) - file deleted` };
+  if (!pending.suggested) log.push('onDeterminingFilename did not fire for this download');
+  if (!r.ok) {
+    log.push(`-> download failed: ${r.error}`);
+    return fail(r.error, { id });
   }
-  return { ok: true, id, saved: `${file.filename}.${ext}` };
+
+  // Check the name Chrome actually used. A wrong name is reported, the file is KEPT.
+  const [item] = await chrome.downloads.search({ id });
+  const full = (item && item.filename) || '';
+  const saved = full.replace(/\\/g, '/');
+  log.push(`Chrome saved the file as: "${full}"`);
+  if (!saved.endsWith(`/${wanted}`)) {
+    const got = saved.split('/').pop() || 'unknown';
+    log.push(`NAME MISMATCH: wanted "${wanted}", got "${got}" (file kept)`);
+    return fail(`saved as "${got}" instead of "${file.filename}.${kind.ext}" - file kept, see the debug log`, { id, mismatch: true, savedAs: got });
+  }
+  return { ok: true, id, saved: `${file.filename}.${kind.ext}`, log };
 }
 
 /* -------------------------------- job --------------------------------- */
@@ -361,9 +419,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       (async () => {
         let r = await downloadOne(files[0], msg.folder, tabId, 'numberer').catch((e) => ({ ok: false, error: errText(e) }));
         // Full-size URL failed: try the URL shown on the page, and say so.
-        if (!r.ok && msg.fallbackUrl && msg.fallbackUrl !== msg.url) {
+        // (Not when the file was saved under a wrong name: that file exists.)
+        if (!r.ok && !r.mismatch && msg.fallbackUrl && msg.fallbackUrl !== msg.url) {
           const r2 = await downloadOne({ filename: msg.filename, url: msg.fallbackUrl }, msg.folder, tabId, 'numberer').catch((e) => ({ ok: false, error: errText(e) }));
-          r = r2.ok ? { ...r2, usedFallback: true, fullResError: r.error } : { ok: false, error: `${r.error}; display-size URL: ${r2.error}` };
+          const log = [...(r.log || []), `full-size failed (${r.error}) - trying the display-size URL`, ...(r2.log || [])];
+          r = r2.ok || r2.mismatch ? { ...r2, log, usedFallback: true, fullResError: r.error } : { ok: false, error: `${r.error}; display-size URL: ${r2.error}`, log };
         }
         sendResponse(r);
       })();

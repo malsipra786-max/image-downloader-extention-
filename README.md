@@ -9,8 +9,9 @@ The number comes either from the image's **label** on the page (for example
 
 **Safety rule:** if the scan finds no images, or a number can't be worked out, the extension
 **refuses to download**. Files are never saved under the site's own names (like `img_8f3a.png`).
-After every download it checks the saved file name; if it is wrong, the file is deleted and
-counted as failed.
+The file name is forced at the moment Chrome picks it (`onDeterminingFilename`), and after every
+download the saved name is checked. If it is still wrong, the file is **kept** and reported
+(orange `⚠` in the hand panel, "failed" in the scan report), with details in the debug log.
 
 ---
 
@@ -66,6 +67,11 @@ Good to know:
   this is replaced with `=s0` to get the original. If that fails, the size shown on the page
   is saved instead and marked `(small)`. Untick it to always save what is shown.
 - The counter, list and folder are remembered, also after reloading the page.
+- **Debug log** (at the bottom of the panel): for every image it shows the image URL, the
+  file type found, the exact `filename` passed to `chrome.downloads.download`, the name Chrome
+  proposed, and the name Chrome finally saved. **Copy log** copies it, for sending in a bug report.
+- JPEG images are saved as `.jpg` (Windows calls the same format `.jfif`). WebP stays `.webp`,
+  PNG `.png`. The type is read from the file itself, or from the server's Content-Type.
 - The settings for this mode are in `HAND_CONFIG` at the top of `numberer.js`
   (`img.image`, `data-media-id`). Never use attributes like `_ngcontent-ng-c2213854978`:
   Angular changes them every time Google updates Flow.
