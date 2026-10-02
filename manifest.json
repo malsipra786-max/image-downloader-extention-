@@ -1,26 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "Flow Image Downloader",
-  "version": "1.0.0",
-  "description": "Download all images from a Google Flow project, named by the number in each image's name (023.png, 024.png, ...).",
+  "name": "Image Number Downloader",
+  "version": "2.0.0",
+  "description": "Download all images from a page (made for Google Flow), named by the number in each image's label or by page order: 001.png, 002.png, ...",
   "permissions": ["downloads", "storage", "scripting", "activeTab", "offscreen"],
-  "host_permissions": [
-    "https://labs.google/*",
-    "https://*.googleusercontent.com/*",
-    "https://storage.googleapis.com/*"
-  ],
+  "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },
-  "content_scripts": [
-    {
-      "matches": ["https://labs.google/*"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
-    }
-  ],
   "action": {
-    "default_title": "Flow Image Downloader",
+    "default_title": "Image Number Downloader",
     "default_popup": "popup.html"
   }
 }

@@ -2,12 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Flow Image Downloader</title>
+    <title>Image Number Downloader</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <h1>Flow Image Downloader</h1>
-
+    <h1>Image Number Downloader</h1>
+    <div id="pageNote" class="note hidden"></div>
     <div id="msg" class="msg hidden"></div>
 
     <section class="form">
@@ -15,19 +15,36 @@
       <input id="folder" type="text" placeholder="e.g. My Flow project" autocomplete="off" />
       <div class="hint">Saved to Downloads/<span id="folderPreview">…</span>/</div>
 
-      <label for="start">Start number <span class="opt">(optional)</span></label>
-      <input id="start" type="number" min="1" step="1" placeholder="Leave empty to use the name's number" />
-      <div class="hint" id="startHint">Example: start 400 → name 1 = 400, name 2 = 401.</div>
+      <label for="mode">Numbering mode</label>
+      <select id="mode">
+        <option value="label">Use label numbers ("23: …" → 023)</option>
+        <option value="order">Page order (oldest first): 1st card = 001</option>
+        <option value="reverse">Page order (reverse): last card = 001</option>
+      </select>
+
+      <div class="two">
+        <div>
+          <label for="start">Start number <span class="opt">(optional)</span></label>
+          <input id="start" type="number" min="1" step="1" placeholder="empty = as is" />
+        </div>
+        <div>
+          <label for="minSize">Min image size</label>
+          <input id="minSize" type="number" min="1" step="1" placeholder="150" />
+        </div>
+      </div>
+      <div class="hint">Start 400 → 1 = 400, 2 = 401, 23 = 422. Images smaller than the min size (px) are ignored.</div>
     </section>
 
     <section class="row">
       <button id="scanBtn" class="primary">Scan</button>
+      <button id="forceBtn" class="hidden">Force scan anyway</button>
       <button id="stopScanBtn" class="hidden">Stop scan</button>
       <span id="scanStatus" class="status"></span>
     </section>
 
     <section id="summary" class="hidden">
       <h2>Scan summary</h2>
+      <div id="sMode" class="modeline"></div>
       <div class="stats">
         <div><b id="sTotal">0</b><span>images found</span></div>
         <div><b id="sLow">–</b><span>lowest number</span></div>
@@ -37,6 +54,9 @@
         <div><b id="sRename">0</b><span>need renaming</span></div>
       </div>
       <div id="sNotes" class="notes"></div>
+
+      <h3>Preview (check the order)</h3>
+      <ul id="preview" class="list mono"></ul>
 
       <h3>Numbers</h3>
       <div id="numList" class="chips"></div>
@@ -52,9 +72,15 @@
       </div>
     </section>
 
+    <details id="debug" class="hidden">
+      <summary>Debug panel</summary>
+      <table id="debugTable"></table>
+    </details>
+
     <section class="row">
       <button id="downloadBtn" class="primary" disabled>Download all</button>
       <button id="stopBtn" class="danger hidden">Stop</button>
+      <span id="downloadHint" class="status">Run Scan first.</span>
     </section>
 
     <section id="progress" class="hidden">
@@ -70,12 +96,13 @@
         <div class="bad"><b id="rFailed">0</b><span>failed</span></div>
       </div>
       <div id="rNotes" class="notes"></div>
+      <ul id="rDups" class="list"></ul>
       <ul id="failedList" class="list"></ul>
       <button id="retryBtn" class="hidden">Retry failed</button>
     </section>
 
     <footer>
-      <button id="debugBtn" class="link">Copy page info (for fixing selectors)</button>
+      <button id="infoBtn" class="link">Copy page info (sample card HTML)</button>
     </footer>
 
     <script src="popup.js"></script>

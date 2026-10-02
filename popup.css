@@ -21,7 +21,7 @@ h3 { font-size: 12px; margin: 12px 0 6px; color: #444; text-transform: uppercase
 .msg.info  { background: #e8f0fe; color: #174ea6; }
 
 .form label { display: block; font-weight: 600; margin-top: 8px; }
-.form input {
+.form input, .form select {
   width: 100%;
   padding: 7px 8px;
   margin-top: 4px;
@@ -100,3 +100,19 @@ button.link:hover { text-decoration: underline; background: none; }
 #report button { margin-top: 8px; }
 
 footer { margin-top: 16px; padding-top: 8px; border-top: 1px solid #eee; text-align: center; font-size: 12px; }
+
+.note { font-size: 12px; color: #5f6368; background: #f1f3f4; padding: 5px 8px; border-radius: 6px; margin-bottom: 8px; }
+.note.warn { background: #fef7e0; color: #7a4f01; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.modeline { font-weight: 600; margin-bottom: 6px; }
+.mono { font: 11px/1.5 ui-monospace, Menlo, Consolas, monospace; }
+.mono .gap { list-style: none; color: #888; }
+.form select { background: #fff; }
+
+#debug { margin-top: 12px; border: 1px solid #dadce0; border-radius: 6px; padding: 6px 8px; }
+#debug summary { cursor: pointer; font-weight: 600; }
+#debugTable { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12px; }
+#debugTable td { padding: 3px 4px; border-top: 1px solid #eee; vertical-align: top; word-break: break-word; }
+#debugTable td:first-child { color: #555; width: 42%; }
+#debugTable tr.bad td { color: #a50e0e; font-weight: 600; }
+#preview { max-height: none; }

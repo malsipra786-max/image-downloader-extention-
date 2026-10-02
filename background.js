@@ -1,49 +1,28 @@
-// Flow Image Downloader - background service worker.
+// Image Number Downloader - background service worker.
 // Runs the download job so it keeps going when the popup is closed.
+//
+// SAFETY: every file is saved under a name WE choose (001.png, 023-2.jpg, ...).
+// The image is fetched first, its type is read from its bytes, and it is saved
+// from a blob: URL with an explicit file name. After saving, the real file name
+// is checked; if Chrome saved it under any other name, the file is deleted and
+// counted as failed. The site's own file names are never used.
 
 const BATCH_SIZE = 3;              // files downloaded at the same time
 const BATCH_DELAY_MS = 500;        // pause between batches so Chrome doesn't skip files
 const DOWNLOAD_TIMEOUT_MS = 180000;
+const FILENAME_RE = /^\d{3,}(-\d+)?$/;
 
 let job = null;
 let jobLoaded = false;
 
-// Direct downloads waiting for Chrome to pick a file name: url -> [pending]
-const pendingByUrl = new Map();
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const errText = (e) => (e && e.message ? e.message : String(e));
 
 /* ------------------------------ helpers ------------------------------- */
 
-const MIME_EXT = {
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-  'image/jpg': 'jpg',
-  'image/webp': 'webp',
-  'image/gif': 'gif',
-  'image/avif': 'avif',
-};
 const EXT_MIME = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', avif: 'image/avif' };
 
-function extFromMime(mime) {
-  return MIME_EXT[(mime || '').split(';')[0].trim().toLowerCase()] || null;
-}
-
-function extFromName(name) {
-  const m = /\.(png|jpe?g|webp|gif|avif)$/i.exec(name || '');
-  return m ? m[1].toLowerCase().replace('jpeg', 'jpg') : null;
-}
-
-function guessExtFromUrl(url) {
-  try {
-    if (url.startsWith('data:')) return extFromMime(url.slice(5).split(/[;,]/)[0]) || 'png';
-    return extFromName(new URL(url).pathname) || 'png';
-  } catch {
-    return 'png';
-  }
-}
-
-// Detect the real image type from the file's first bytes.
+// The real image type, read from the file's first bytes.
 function sniffExt(base64) {
   let b;
   try {
@@ -56,7 +35,7 @@ function sniffExt(base64) {
   if (c(0) === 0xff && c(1) === 0xd8 && c(2) === 0xff) return 'jpg';
   if (b.slice(0, 4) === 'RIFF' && b.slice(8, 12) === 'WEBP') return 'webp';
   if (b.slice(0, 4) === 'GIF8') return 'gif';
-  if (b.slice(4, 12) === 'ftypavif') return 'avif';
+  if (b.slice(4, 12) === 'ftypavif' || b.slice(4, 12) === 'ftypavis') return 'avif';
   return null;
 }
 
@@ -69,32 +48,20 @@ function toBase64(buf) {
   return btoa(bin);
 }
 
-const errText = (e) => (e && e.message ? e.message : String(e));
-
-/* ---------------------------- file naming ----------------------------- */
-
-chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
-  const list = pendingByUrl.get(item.url);
-  if (!list) return; // not ours: Chrome keeps its normal name
-  const p = list.find((x) => x.id === item.id) || list.find((x) => !x.claimed);
-  if (!p) return;
-  p.claimed = true;
-  p.mime = item.mime || '';
-  const ext = p.fixedExt || extFromMime(item.mime) || extFromName(item.filename) || p.fallbackExt;
-  suggest({ filename: `${p.base}.${ext}`, conflictAction: 'overwrite' });
-});
-
-function addPending(url, p) {
-  if (!pendingByUrl.has(url)) pendingByUrl.set(url, []);
-  pendingByUrl.get(url).push(p);
-}
-
-function removePending(url, p) {
-  const list = pendingByUrl.get(url);
-  if (!list) return;
-  const i = list.indexOf(p);
-  if (i >= 0) list.splice(i, 1);
-  if (!list.length) pendingByUrl.delete(url);
+// Refuses the whole job if anything about the file list is unsafe.
+function validateJob(folder, files) {
+  if (!folder || /(^|\/)\.\.?(\/|$)/.test(folder) || /[<>:"\\|?*]/.test(folder)) return 'Invalid folder name.';
+  if (!Array.isArray(files) || !files.length) return 'Nothing to download. Run a successful scan first.';
+  const names = new Set();
+  for (const f of files) {
+    if (!f || typeof f.url !== 'string' || !f.url) return 'An image has no URL. Scan again.';
+    if (typeof f.filename !== 'string' || !FILENAME_RE.test(f.filename)) {
+      return `Refused: an image has no valid number (${JSON.stringify(f && f.filename)}). Nothing was downloaded.`;
+    }
+    if (names.has(f.filename)) return `Refused: two images would get the same name (${f.filename}).`;
+    names.add(f.filename);
+  }
+  return null;
 }
 
 /* --------------------------- chrome.downloads -------------------------- */
@@ -127,48 +94,47 @@ function waitForDownload(id) {
   });
 }
 
-async function startAndWait(url, filename, pending) {
-  let id;
-  try {
-    id = await chrome.downloads.download({ url, filename, saveAs: false, conflictAction: 'overwrite' });
-  } catch (e) {
-    return { ok: false, error: errText(e) };
-  }
-  if (id === undefined) return { ok: false, error: 'Download did not start' };
-  if (pending) pending.id = id;
-  return waitForDownload(id);
-}
-
 /* ------------------------- blob URLs (offscreen) ----------------------- */
 
-let creatingOffscreen = null;
+let offscreenReady = null;
 
-async function ensureOffscreen() {
-  if (chrome.runtime.getContexts) {
-    const ctx = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
-    if (ctx.length) return;
+// Creates the offscreen page once and waits until it answers.
+function ensureOffscreen() {
+  if (!offscreenReady) {
+    offscreenReady = (async () => {
+      const ctx = chrome.runtime.getContexts ? await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] }) : [];
+      if (!ctx.length) {
+        await chrome.offscreen
+          .createDocument({
+            url: 'offscreen.html',
+            reasons: ['BLOBS'],
+            justification: 'Turn fetched image bytes into a file Chrome can download.',
+          })
+          .catch((e) => {
+            if (!/single offscreen/i.test(errText(e))) throw e;
+          });
+      }
+      for (let i = 0; i < 50; i++) {
+        const r = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'ping' }).catch(() => null);
+        if (r && r.ok) return;
+        await sleep(100);
+      }
+      throw new Error('offscreen page did not start');
+    })().catch((e) => {
+      offscreenReady = null;
+      throw e;
+    });
   }
-  if (!creatingOffscreen) {
-    creatingOffscreen = chrome.offscreen
-      .createDocument({
-        url: 'offscreen.html',
-        reasons: ['BLOBS'],
-        justification: 'Turn fetched image bytes into a file Chrome can download.',
-      })
-      .catch((e) => {
-        if (!/single offscreen/i.test(errText(e))) throw e;
-      })
-      .finally(() => {
-        creatingOffscreen = null;
-      });
-  }
-  await creatingOffscreen;
+  return offscreenReady;
 }
 
 async function makeBlobUrl(base64, mime) {
   await ensureOffscreen();
-  const r = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'makeBlobUrl', base64, mime });
-  if (!r || !r.url) throw new Error('Could not prepare the file');
+  const r = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'makeBlobUrl', base64, mime }).catch(() => null);
+  if (!r || !r.url) {
+    offscreenReady = null; // it may have been closed; recreate next time
+    throw new Error('could not prepare the file');
+  }
   return r.url;
 }
 
@@ -180,23 +146,22 @@ function revokeBlobUrl(url) {
 
 async function getBytes(url, tabId) {
   const errors = [];
-  // 1) Inside the Flow page: works for blob:, data: and the page's own URLs.
+  // 1) Inside the page: works for blob:, data: and the page's own URLs.
   if (tabId != null) {
     try {
       const r = await chrome.tabs.sendMessage(tabId, { type: 'fetchImage', url });
       if (r && r.ok) return r;
-      errors.push(r ? r.error : 'no answer from page');
+      errors.push(r ? r.error : 'no answer from the page (was it reloaded?)');
     } catch (e) {
       errors.push(`page: ${errText(e)}`);
     }
   }
-  // 2) From the extension (no CORS limits for allowed hosts).
+  // 2) From the extension (no CORS limits).
   if (/^https?:/i.test(url)) {
     try {
       const res = await fetch(url, { credentials: 'include' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const buf = await res.arrayBuffer();
-      return { ok: true, base64: toBase64(buf), mime: res.headers.get('content-type') || '' };
+      return { ok: true, base64: toBase64(await res.arrayBuffer()), mime: res.headers.get('content-type') || '' };
     } catch (e) {
       errors.push(`extension: ${errText(e)}`);
     }
@@ -207,54 +172,44 @@ async function getBytes(url, tabId) {
 /* ---------------------------- one download ---------------------------- */
 
 async function downloadOne(file, folder, tabId) {
-  const base = `${folder}/${file.filename}`;
-  const url = file.url;
-  let firstError = '';
+  const data = await getBytes(file.url, tabId);
+  if (!data.ok) return { ok: false, error: data.error };
 
-  // https: let Chrome download the URL directly (keeps the original file).
-  if (/^https?:/i.test(url)) {
-    const pending = { base, fallbackExt: guessExtFromUrl(url) };
-    addPending(url, pending);
-    const r = await startAndWait(url, `${base}.${pending.fallbackExt}`, pending);
-    removePending(url, pending);
-    if (r.ok) {
-      if (!pending.mime || /^image\//i.test(pending.mime)) return { ok: true };
-      // The server sent something that isn't an image (e.g. a sign-in page).
-      await chrome.downloads.removeFile(r.id).catch(() => {});
-      firstError = `not an image (${pending.mime})`;
-    } else {
-      firstError = r.error;
-    }
-    if (r.id !== undefined) chrome.downloads.erase({ id: r.id }).catch(() => {});
-  }
+  const ext = sniffExt(data.base64);
+  if (!ext) return { ok: false, error: `not a PNG/JPG/WEBP/GIF/AVIF image (${data.mime || 'unknown type'})` };
 
-  // blob:, data:, or a failed direct download: fetch the bytes, then save them.
-  const data = await getBytes(url, tabId);
-  if (!data.ok) return { ok: false, error: [firstError, data.error].filter(Boolean).join('; ') };
-  const ext = sniffExt(data.base64) || extFromMime(data.mime);
-  if (!ext) return { ok: false, error: `not an image (${data.mime || 'unknown type'})` };
-
+  const wanted = `${folder}/${file.filename}.${ext}`;
   let blobUrl;
   try {
     blobUrl = await makeBlobUrl(data.base64, EXT_MIME[ext]);
   } catch (e) {
     return { ok: false, error: errText(e) };
   }
-  // Registered too: once onDeterminingFilename has a listener, Chrome only keeps
-  // the name we suggest there.
-  const pending = { base, fixedExt: ext };
-  addPending(blobUrl, pending);
-  const r = await startAndWait(blobUrl, `${base}.${ext}`, pending);
-  removePending(blobUrl, pending);
+
+  let id;
+  try {
+    id = await chrome.downloads.download({ url: blobUrl, filename: wanted, saveAs: false, conflictAction: 'overwrite' });
+  } catch (e) {
+    revokeBlobUrl(blobUrl);
+    return { ok: false, error: errText(e) };
+  }
+  const r = await waitForDownload(id);
   revokeBlobUrl(blobUrl);
-  return r.ok ? { ok: true } : { ok: false, error: r.error };
+  if (!r.ok) return { ok: false, error: r.error };
+
+  // Check the name Chrome actually used. Wrong name -> delete the file.
+  const [item] = await chrome.downloads.search({ id });
+  const saved = ((item && item.filename) || '').replace(/\\/g, '/');
+  if (!saved.endsWith(`/${wanted}`)) {
+    await chrome.downloads.removeFile(id).catch(() => {});
+    chrome.downloads.erase({ id }).catch(() => {});
+    const got = saved.split('/').pop() || 'unknown';
+    return { ok: false, error: `Chrome saved it as "${got}" instead of "${file.filename}.${ext}" (another extension may be renaming downloads) - file deleted` };
+  }
+  return { ok: true, saved: `${file.filename}.${ext}` };
 }
 
 /* -------------------------------- job --------------------------------- */
-
-function publicJob() {
-  return job;
-}
 
 async function saveJob() {
   await chrome.storage.session.set({ job }).catch(() => {});
@@ -272,11 +227,10 @@ async function loadJob() {
   if (saved && !job) {
     job = saved;
     if (job.running) {
-      // The browser stopped the worker mid-job; whatever wasn't done counts as not downloaded.
+      // Chrome stopped the worker mid-job: offer the rest through "Retry failed".
       job.running = false;
       job.stopRequested = false;
       job.interrupted = true;
-      // Offer the files that weren't reached through "Retry failed".
       const rest = (job.pendingFiles || []).slice(job.done);
       job.failed = (job.failed || []).concat(rest.map((f) => ({ ...f, error: 'not downloaded (interrupted)' })));
       job.pendingFiles = null;
@@ -287,15 +241,17 @@ async function loadJob() {
 }
 
 async function runJob(files) {
-  job.running = true;
-  job.stopRequested = false;
-  job.total = files.length;
-  job.done = 0;
-  job.ok = 0;
-  job.failed = [];
-  job.notAttempted = 0;
-  job.finishedAt = null;
-  job.pendingFiles = files;
+  Object.assign(job, {
+    running: true,
+    stopRequested: false,
+    total: files.length,
+    done: 0,
+    ok: 0,
+    failed: [],
+    notAttempted: 0,
+    finishedAt: null,
+    pendingFiles: files,
+  });
   broadcast();
 
   for (let i = 0; i < files.length; i += BATCH_SIZE) {
@@ -332,7 +288,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   switch (msg.type) {
     case 'scanDone':
-      if (sender.tab && msg.result && msg.result.ok) {
+      if (sender.tab && msg.result) {
         chrome.storage.session.set({ [`scan_${sender.tab.id}`]: msg.result }).catch(() => {});
       }
       return;
@@ -344,7 +300,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     case 'getJob':
-      loadJob().then(() => sendResponse(publicJob()));
+      loadJob().then(() => sendResponse(job));
       return true;
 
     case 'startDownload':
@@ -353,11 +309,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: false, error: 'A download is already running.' });
           return;
         }
+        const problem = validateJob(msg.folder, msg.files);
+        if (problem) {
+          sendResponse({ ok: false, error: problem });
+          return;
+        }
         job = {
           tabId: msg.tabId,
           folder: msg.folder,
+          mode: msg.mode,
           skippedNames: msg.skippedNames || 0,
-          duplicates: msg.duplicates || 0,
+          duplicates: msg.duplicates || [],
           okAll: 0,
           round: 1,
         };
@@ -373,6 +335,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           return;
         }
         const files = job.failed.map(({ error, ...f }) => f);
+        const problem = validateJob(job.folder, files);
+        if (problem) {
+          sendResponse({ ok: false, error: problem });
+          return;
+        }
         job.round++;
         job.interrupted = false;
         if (msg.tabId != null) job.tabId = msg.tabId;
